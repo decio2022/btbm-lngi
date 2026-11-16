@@ -570,6 +570,16 @@ a.ghost {
     color: var(--accent);
 }
 
+/* Which side of now the reels below measure. */
+.rewind-side {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
 .rewind-reels {
     display: flex;
     flex-direction: column;
