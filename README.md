@@ -25,9 +25,12 @@ walk climbs through `(0)`, `(0)(1)`, `(0)(1)(1)`, … and the display keeps up a
   table as the Y → BMS image of each ω-Y sequence.
 - **Search** — type an ordinal and get the moment it is reached; or pick a day,
   month or year and see the roundest ordinal inside it.
-- **Rewind** — drag the odometer-style sliders to move the view back, or type a
-  date (BC included). A signed speed slider freezes time at 0×, runs it
-  backwards below that, and speeds it up to 10⁸×.
+- **Set time** — type a date (BC included) and the view goes there: a date
+  before now looks back at it, a date after now — the first day of 2028, say —
+  shows how far the walk will have got by then. The odometer-style sliders set
+  the same thing as a distance from now, into the past or the future. A signed
+  speed slider freezes time at 0×, runs it backwards below that, and speeds it
+  up to 10⁸×.
 - **Panels** — any number of extra views of the same ordinal, resizable in both
   directions.
 - English and Chinese, light and dark, and every setting is kept in

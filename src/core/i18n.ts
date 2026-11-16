@@ -18,16 +18,19 @@ const ZH: Record<string, string> = {
     'to next ordinal': '至下一个序数',
     'to next milestone': '至下一个里程碑',
     'until start': '后开始',
-    // rewind
-    Rewind: '回溯',
-    'jump to a moment': '跳转到某一时刻',
+    // set time
+    'Set time': '设置时间',
+    'set a moment, past or future': '设定某一时刻，过去或未来',
+    'distance from now, into the': '与现在的距离，方向',
+    past: '过去',
+    future: '未来',
     'Reset time': '重置时间',
     'Reset clock': '重置时钟',
     'Each slider is one digit; pick the granularities you want above.':
         '每个滑块是一位数字；先在上面选好需要的粒度。',
     ago: '前',
     '0 seconds': '0 秒',
-    // rewind units
+    // set-time units
     millennia: '千年',
     centuries: '百年',
     decades: '十年',
@@ -45,7 +48,7 @@ const ZH: Record<string, string> = {
     // milestones
     Milestones: '里程碑',
     'Back to where the walk is': '回到行进位置',
-    '↩ jump to 10 real seconds before this landmark': '↩ 跳到该里程碑前 10 个现实秒',
+    'jump to 10 real seconds before this landmark': '跳到该里程碑前 10 个现实秒',
     'Every landmark reached. The sequence keeps going.': '所有里程碑均已到达。序列仍在继续。',
     'unreachable — the walk never gets there': '不可达——行进永远不会到达',
     'of this stretch': '这一段',

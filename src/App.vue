@@ -33,11 +33,13 @@ import { translate } from './core/i18n';
 import { DESC_ZH } from './core/descriptions.zh';
 import { MIN_PANEL_HEIGHT, useSettings, type CaptionMode, type View } from './composables/useSettings';
 
-const clock = useClock();
-const settings = useSettings();
-
 /** `import.meta` is not usable in the template, so pull it out in the script. */
 const isDev = import.meta.env.DEV;
+
+// Running fast from the past stops on arrival at the live moment; the
+// developer build runs straight through it.
+const clock = useClock({ stopAtLive: !isDev });
+const settings = useSettings();
 
 const started = computed(() => clock.elapsedMs.value >= 0);
 
@@ -313,12 +315,14 @@ const elapsedText = computed(() =>
 );
 
 /**
- * The rewind control is a stack of sliders, one per granularity — the way an
- * odometer reads. Each level carries only its own digit, so "3 days 7 hours" is
- * set on two independent tracks instead of one hair-trigger control.
+ * The time is set as a distance from now, on a stack of sliders, one per
+ * granularity — the way an odometer reads. Each level carries only its own
+ * digit, so "3 days 7 hours" is set on two independent tracks instead of one
+ * hair-trigger control. The distance runs into the past or into the future;
+ * [`reelFuture`] says which.
  *
  * Levels are chosen by the user: the largest selected one is unbounded (up to
- * the available history), the rest wrap at their natural base.
+ * the available range), the rest wrap at their natural base.
  */
 const REWIND_UNITS = [
     { id: 'millennium', label: 'millennia', ms: 1000 * 365 * 86_400_000, base: Number.POSITIVE_INFINITY },
@@ -350,9 +354,42 @@ function toggleUnit(id: string) {
     settings.rewindUnits.value = next;
 }
 
-/** The current rewind, split into one digit per active level. */
+/**
+ * Which side of now the reels measure. It follows the view whenever the view
+ * is off the live moment; on it there is no side to follow, so the last one
+ * stands and decides where the next drag goes.
+ */
+const reelFuture = ref(false);
+
+watch(
+    () => (clock.atLive.value ? 0 : Math.sign(clock.offsetMs.value)),
+    (side) => {
+        if (side !== 0) reelFuture.value = side > 0;
+    },
+    { immediate: true },
+);
+
+/**
+ * Pick the side. A view that is already off the live moment is mirrored
+ * across it — three days ago becomes three days ahead — so the reels keep
+ * reading what is on screen.
+ */
+function setReelSide(future: boolean) {
+    reelFuture.value = future;
+    if (clock.atLive.value) return;
+    clock.setOffset((future ? 1 : -1) * Math.abs(clock.offsetMs.value));
+}
+
+/**
+ * How far the reels reach. The past ends where the clock says it does; the
+ * future has no end of its own, so it is given the same run as the stretch
+ * before the start.
+ */
+const reelSpanMs = computed(() => (reelFuture.value ? PRE_START_MS : clock.maxRewindMs.value));
+
+/** The distance from now, split into one digit per active level. */
 const rewindDigits = computed(() => {
-    let rest = clock.rewindMs.value;
+    let rest = clock.atLive.value ? 0 : Math.abs(clock.offsetMs.value);
     const out: Record<string, number> = {};
     for (const unit of activeUnits.value) {
         const digit = Math.floor(rest / unit.ms);
@@ -362,20 +399,28 @@ const rewindDigits = computed(() => {
     return out;
 });
 
-/** Range of a level: the largest one is limited only by the available history. */
+/** Range of a level: the largest one is limited only by the available range. */
 function maxFor(index: number): number {
     const unit = activeUnits.value[index];
     if (index === 0) {
-        return Math.max(0, Math.floor(clock.maxRewindMs.value / unit.ms));
+        return Math.max(0, Math.floor(reelSpanMs.value / unit.ms));
     }
-    return Math.min(unit.base, Math.floor(clock.maxRewindMs.value / unit.ms));
+    return Math.min(unit.base, Math.floor(reelSpanMs.value / unit.ms));
+}
+
+/**
+ * A reel's digit as text. A jump to a far landmark leaves the view aeons from
+ * now, and the top reel then holds a number too long for its column.
+ */
+function reelText(digit: number): string {
+    return digit < 1e7 ? String(digit) : digit.toExponential(1).replace('e+', 'e');
 }
 
 /** Track fill for a reel, as a CSS custom property the slider's track reads. */
 function fillStyle(index: number): Record<string, string> {
     const max = maxFor(index);
     const value = rewindDigits.value[activeUnits.value[index].id] ?? 0;
-    const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+    const pct = max > 0 ? Math.round(Math.min(1, value / max) * 100) : 0;
     return { '--fill': `${pct}%` };
 }
 
@@ -385,7 +430,7 @@ function onReel(index: number, event: Event) {
     activeUnits.value.forEach((u, i) => {
         total += (i === index ? digit : rewindDigits.value[u.id]) * u.ms;
     });
-    clock.setRewind(total);
+    clock.setOffset(reelFuture.value ? total : -total);
 }
 
 const rewinding = computed(() => clock.rewindMs.value > 0);
@@ -397,6 +442,9 @@ const rewinding = computed(() => clock.rewindMs.value > 0);
  */
 function formatStamp(ms: number): string {
     const d = new Date(ms);
+    // Past what a `Date` can hold there is no stamp to write; the field falls
+    // back to its placeholder.
+    if (Number.isNaN(d.getTime())) return '';
     const p = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
@@ -484,16 +532,18 @@ function onJumpInput(event: Event) {
     jumpDraft.value = (event.target as HTMLInputElement).value;
 }
 
-/** Jump to the moment in the field, clamped to the available history. */
+/**
+ * Set the time to the moment in the field. A date before now looks back at
+ * it; a date after now goes there just the same, and the walk is shown as far
+ * along as it will be by then.
+ */
 function onJumpCommit() {
     const text = jumpDraft.value;
     jumpDraft.value = null;
     if (!text) return;
     const target = parseStamp(text);
     if (target === null) return;
-    const now = START_MS + clock.liveMs.value;
-    const clamped = Math.min(Math.max(target, START_MS - PRE_START_MS), now);
-    clock.setRewind(now - clamped);
+    clock.seek(target - START_MS);
 }
 /**
  * The speed slider is signed and logarithmic throughout. A single log scale
@@ -554,13 +604,10 @@ function expToSpeed(v: number): number {
     return Math.sign(v) * mag;
 }
 
-/** Set the speed, capped to the range; outside dev a forward speed may only
- *  close a rewind, never pass live. */
+/** Set the speed, capped to the range. */
 function applySpeed(next: number) {
     if (!Number.isFinite(next)) return;
-    const capped = Math.sign(next) * Math.min(SPEED_MAX, Math.abs(next));
-    if (!isDev && !rewinding.value && capped > 1) return;
-    clock.timeSpeed.value = capped;
+    clock.timeSpeed.value = Math.sign(next) * Math.min(SPEED_MAX, Math.abs(next));
 }
 
 const speedExp = computed(() => speedToExp(clock.timeSpeed.value));
@@ -612,27 +659,28 @@ function endSpeedEdit() {
 }
 
 /**
- * Outside dev, acceleration is only a way to catch up: the moment the view
- * reaches live time it switches itself off and settles exactly on live.
+ * Outside dev, a clock frozen or reversed all the way into the earliest
+ * reachable moment stops there and goes back to 1×. (Catching up with the live
+ * moment is the clock's own business: see `stopAtLive`.)
  */
 watch(clock.elapsedMs, () => {
     if (isDev) return;
-    const speed = clock.timeSpeed.value;
-    if (speed > 1 && clock.elapsedMs.value >= clock.liveMs.value) {
+    if (clock.timeSpeed.value !== 1 && clock.rewindMs.value >= clock.maxRewindMs.value) {
         clock.timeSpeed.value = 1;
-        clock.goLive();
-    } else if (speed !== 1 && clock.rewindMs.value >= clock.maxRewindMs.value) {
-        // Frozen or reversed all the way into the earliest reachable moment.
-        clock.timeSpeed.value = 1;
-        clock.setRewind(clock.maxRewindMs.value);
+        clock.setOffset(-clock.maxRewindMs.value);
     }
 });
 
+/** Where the set time sits relative to now: `3 days ago`, `1 year ahead`, `live`. */
 const rewindText = computed(() => {
     const lang = settings.lang.value;
-    if (rewinding.value) return `${formatDuration(clock.rewindMs.value, lang)} ${t('ago')}`;
+    // A landmark jump can land aeons out, where spelled-out years stop being
+    // readable.
+    const span = (ms: number) =>
+        ms / (365 * 86_400_000) >= 1e5 ? formatSpan(ms) : formatDuration(ms, lang);
+    if (rewinding.value) return `${span(clock.rewindMs.value)} ${t('ago')}`;
     const ahead = clock.aheadMs.value;
-    return ahead > 0 ? `${formatDuration(ahead, lang)} ${t('ahead')}` : t('live');
+    return ahead > 0 ? `${span(ahead)} ${t('ahead')}` : t('live');
 });
 
 
@@ -877,27 +925,17 @@ function jumpLeadMs(): number {
     return JUMP_LEAD_MS * (Math.abs(clock.timeSpeed.value) || 1);
 }
 
-/** The live position, in ms since the start. */
-const liveMs = computed(() => clock.liveMs.value);
-
 /**
- * Whether a landmark can be jumped to. For everyone the jump only goes
- * backwards — a moment that has not happened yet is not reachable, so the
- * button is not offered rather than silently landing somewhere else. The
- * developer build may land anywhere.
+ * Whether a landmark can be jumped to: any that has a moment at all, behind
+ * the walk or ahead of it. `LIMIT` has none, so no button is offered there.
  */
 function canJump(atMs: number): boolean {
-    return Number.isFinite(atMs) && (isDev || atMs - jumpLeadMs() < liveMs.value);
+    return Number.isFinite(atMs);
 }
 
 function jumpTo(atMs: number) {
     if (!canJump(atMs)) return;
-    const target = atMs - jumpLeadMs();
-    if (isDev) {
-        clock.seek(target);
-    } else {
-        clock.setRewind(liveMs.value - target);
-    }
+    clock.seek(atMs - jumpLeadMs());
 }
 
 // Start at the last landmark already passed rather than at the first ordinal:
@@ -1343,10 +1381,9 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
 
         </section>
 
-        <!-- Stay visible while rewound into the pre-start stretch: hiding it there
+        <!-- Always there: the time can be set from any moment, and hiding the card
              would also hide the only way back to live. -->
         <section
-            v-if="started || rewinding || isDev"
             class="rewind-card"
             :class="{ collapsed: settings.collapsedCards.value.includes('rewind') }"
         >
@@ -1359,7 +1396,7 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
                     >
                         {{ settings.collapsedCards.value.includes('rewind') ? '▶' : '▼' }}
                     </button>
-                    {{ t('Rewind') }}
+                    {{ t('Set time') }}
                 </h2>
                 <span class="rewind-value">{{ rewindText }}</span>
             </div>
@@ -1377,7 +1414,7 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
                     @change="onJumpCommit"
                     @blur="onJumpCommit"
                 />
-                <span>{{ t('jump to a moment') }}</span>
+                <span>{{ t('set a moment, past or future') }}</span>
             </div>
             <div class="rewind-levels">
                 <button
@@ -1393,6 +1430,23 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
                     {{ t('Reset time') }}
                 </button>
             </div>
+            <div class="rewind-side">
+                <span>{{ t('distance from now, into the') }}</span>
+                <button
+                    class="ghost chip"
+                    :class="{ on: !reelFuture }"
+                    @click="setReelSide(false)"
+                >
+                    {{ t('past') }}
+                </button>
+                <button
+                    class="ghost chip"
+                    :class="{ on: reelFuture }"
+                    @click="setReelSide(true)"
+                >
+                    {{ t('future') }}
+                </button>
+            </div>
             <div class="rewind-reels">
                 <label v-for="(unit, index) in activeUnits" :key="unit.id" class="reel">
                     <span class="reel-label">{{ t(unit.label) }}</span>
@@ -1404,7 +1458,7 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
                         :style="fillStyle(index)"
                         @input="onReel(index, $event)"
                     />
-                    <span class="reel-value">{{ rewindDigits[unit.id] }}</span>
+                    <span class="reel-value">{{ reelText(rewindDigits[unit.id]) }}</span>
                 </label>
             </div>
             <div class="rewind-row">
@@ -1490,7 +1544,7 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
             </div>
             <div v-if="focused !== null && canJump(shown.atMs)" class="milestone-actions">
                 <button class="ghost" @click="jumpTo(shown.atMs)">
-                    {{ t('↩ jump to 10 real seconds before this landmark') }}
+                    {{ t('jump to 10 real seconds before this landmark') }}
                 </button>
             </div>
             <p v-if="shownDesc" class="milestone-desc" v-html="shownDesc" />
@@ -1626,7 +1680,7 @@ function startResizeWidth(panel: { width: number }, e: PointerEvent) {
                                 class="ghost"
                                 @click="jumpTo(search.atMs)"
                             >
-                                {{ t('↩ jump to 10 real seconds before this landmark') }}
+                                {{ t('jump to 10 real seconds before this landmark') }}
                             </button>
                         </template>
                     </div>

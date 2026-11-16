@@ -6,8 +6,8 @@ import { type Lang, translate } from '../core/i18n';
  * How far before the start the view may be pushed.
  *
  * Nothing changes back there — the walk is pinned to the empty matrix — but the
- * region has to be reachable, otherwise the rewind stops dead at the first
- * moment of the timeline. A hundred millennia is far enough for any date a
+ * region has to be reachable, otherwise setting the time back stops dead at the
+ * first moment of the timeline. A hundred millennia is far enough for any date a
  * `Date` can hold, and keeps the year reel's range in the thousands.
  */
 export const PRE_START_MS = 100_000 * 365 * 86_400_000;
@@ -28,8 +28,17 @@ export const PRE_START_MS = 100_000 * 365 * 86_400_000;
  * `driftMs` accumulates `dt * (timeSpeed - 1)`, so the distance from the live
  * position is `timeOffsetMs + driftMs`: accelerating the clock moves the view
  * forward exactly as a positive offset would, and is reported as such.
+ *
+ * The view may sit on either side of the live position: the time is simply
+ * set, to a moment that has passed or to one that has not come yet.
+ *
+ * With `stopAtLive`, a clock running fast from the past stops when it catches
+ * up: it settles on the live position at 1× instead of sailing on into the
+ * future. Only catching up does that — a view already at or past live keeps
+ * whatever speed it is given.
  */
-export function useClock() {
+export function useClock(options: { stopAtLive?: boolean } = {}) {
+    const stopAtLive = options.stopAtLive ?? false;
     const virtualElapsed = ref(Date.now() - START_MS);
     const timeSpeed = ref(1);
     const timeOffsetMs = ref(0);
@@ -55,8 +64,16 @@ export function useClock() {
             // is accumulated and a gap (background tab, sleep) closes at once.
             virtualElapsed.value = Date.now() - START_MS + driftMs.value;
         } else {
-            virtualElapsed.value += dt * timeSpeed.value;
-            driftMs.value += dt * (timeSpeed.value - 1);
+            const speed = timeSpeed.value;
+            const before = timeOffsetMs.value + driftMs.value;
+            virtualElapsed.value += dt * speed;
+            driftMs.value += dt * (speed - 1);
+            // Checked on the integration step itself, so that only the clock
+            // running into live counts — a typed jump across it does not.
+            if (stopAtLive && speed > 1 && before < 0 && timeOffsetMs.value + driftMs.value >= 0) {
+                timeSpeed.value = 1;
+                timeOffsetMs.value = -driftMs.value;
+            }
         }
         elapsedMs.value = virtualElapsed.value + timeOffsetMs.value;
 
@@ -87,34 +104,32 @@ export function useClock() {
     /** How far into the past the view currently sits (`0` = not behind). */
     const rewindMs = computed(() => Math.max(0, -offsetMs.value));
 
-    /** How far into the future acceleration has pushed the view. */
+    /** How far into the future the view currently sits (`0` = not ahead). */
     const aheadMs = computed(() => Math.max(0, offsetMs.value));
 
     /** Whether the view sits exactly on the live position. */
     const atLive = computed(() => Math.abs(offsetMs.value) < 1);
 
     /**
-     * Show an earlier moment. Only backwards: a positive offset would put the
-     * view in the future, which the live clock has not reached yet.
+     * Put the view `ms` away from the live position: negative is the past,
+     * positive the future. The past ends at the run-up before the start; the
+     * future has no end.
      */
-    function setRewind(ms: number) {
-        const back = Math.min(Math.max(ms, 0), maxRewindMs.value);
-        timeOffsetMs.value = -back - driftMs.value;
+    function setOffset(ms: number) {
+        timeOffsetMs.value = Math.max(ms, -maxRewindMs.value) - driftMs.value;
     }
 
-    /** Snap back to the live position, cancelling both the rewind and the drift. */
+    /** Snap back to the live position, cancelling both the set time and the drift. */
     function goLive() {
         timeOffsetMs.value = -driftMs.value;
     }
 
     /**
-     * Put the view at an arbitrary moment, forwards included.
-     *
-     * Only the developer jump uses this: for everyone else a moment that has not
-     * happened yet is not reachable, which is what [`setRewind`] enforces.
+     * Set the time: put the view at `ms` since the start, whichever side of
+     * the live position that is. The clock keeps running from there.
      */
     function seek(ms: number) {
-        timeOffsetMs.value = ms - virtualElapsed.value;
+        timeOffsetMs.value = Math.max(ms, -PRE_START_MS) - virtualElapsed.value;
     }
 
     function reset() {
@@ -131,10 +146,11 @@ export function useClock() {
         timeOffsetMs,
         liveMs,
         maxRewindMs,
+        offsetMs,
         rewindMs,
         aheadMs,
         atLive,
-        setRewind,
+        setOffset,
         goLive,
         seek,
         reset,
